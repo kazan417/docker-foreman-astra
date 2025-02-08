@@ -1,23 +1,22 @@
 # Base container that is used for both building and running the app
-FROM quay.io/centos/centos:stream9 as base
+FROM registry.astralinux.ru/astra/ubi18 as base
 ARG NODEJS_VERSION="18"
 ENV FOREMAN_FQDN=foreman.example.com
 ENV FOREMAN_DOMAIN=example.com
 
 RUN \
-  dnf upgrade -y && \
-  dnf module enable nodejs:${NODEJS_VERSION} -y && \
-  dnf install -y postgresql-libs ruby{,gems} rubygem-{rake,bundler} npm nc hostname && \
-  dnf clean all
+  apt update -y && \
+  apt install -y nodejs && \
+  apt install -y postgresql-server-dev-all postgresql-server-dev-15 \
+      ruby ruby-rubygems rake bundler npm netcat-openbsd hostname 
 
 ARG HOME=/home/foreman
 WORKDIR $HOME
-RUN groupadd -r foreman -f -g 0 && \
-    useradd -u 1001 -r -g foreman -d $HOME -s /sbin/nologin \
-    -c "Foreman Application User" foreman && \
-    chown -R 1001:0 $HOME && \
-    chmod -R g=u ${HOME}
-
+ARG UID=1001
+ARG GID=1001
+# add our user and group first to make sure their IDs get assigned consistently, regardless of whatever dependencies get added
+RUN groupadd -r foreman -g ${GID} && useradd -u ${UID} -c "systemuser for foreman application" -r -g foreman foreman -d ${HOME}
+RUN usermod -aG root foreman
 # Add a script to be executed every time the container starts.
 COPY extras/containers/entrypoint.sh /usr/bin/
 RUN chmod +x /usr/bin/entrypoint.sh
@@ -30,18 +29,17 @@ ENV FOREMAN_APIPIE_LANGS=en
 ENV BUNDLER_SKIPPED_GROUPS="test development openid libvirt journald facter console"
 
 RUN \
-  dnf install -y redhat-rpm-config git-core \
-    gcc-c++ make bzip2 gettext tar \
-    libxml2-devel libcurl-devel ruby-devel \
-    postgresql-devel && \
-  dnf clean all
-
+  apt update && apt install -y devscripts \
+    gcc cpp make bzip2 gettext tar \
+    libxml2-dev libcurl4-openssl-dev ruby-dev \
+    postgresql-server-dev-all postgresql-server-dev-15 \
+    libyaml-dev
 ENV DATABASE_URL=nulldb://nohost
 
 ARG HOME=/home/foreman
-USER 1001
+USER 0
 WORKDIR $HOME
-COPY --chown=1001:0 . ${HOME}/
+COPY --chown=1001:1001 . ${HOME}/
 RUN bundle config set --local without "${BUNDLER_SKIPPED_GROUPS}" && \
   bundle config set --local clean true && \
   bundle config set --local path vendor && \
@@ -65,13 +63,17 @@ RUN npm install --no-audit --no-optional && \
   bundle install
 
 USER 0
-RUN chgrp -R 0 ${HOME} && \
+RUN chgrp -R 1001 ${HOME} && \
     chmod -R g=u ${HOME}
 
 USER 1001
 
 FROM base
 
+USER 0
+RUN chgrp -R 1001 ${HOME} && \
+    chmod -R g=u ${HOME}
+USER 1001
 ARG HOME=/home/foreman
 ENV RAILS_ENV=production
 ENV RAILS_SERVE_STATIC_FILES=true
@@ -79,15 +81,15 @@ ENV RAILS_LOG_TO_STDOUT=true
 
 USER 1001
 WORKDIR ${HOME}
-COPY --chown=1001:0 . ${HOME}/
+COPY --chown=1001:1001 . ${HOME}/
 COPY --from=builder /usr/bin/entrypoint.sh /usr/bin/entrypoint.sh
-COPY --from=builder --chown=1001:0 ${HOME}/.bundle/config ${HOME}/.bundle/config
-COPY --from=builder --chown=1001:0 ${HOME}/Gemfile.lock ${HOME}/Gemfile.lock
-COPY --from=builder --chown=1001:0 ${HOME}/vendor/ruby ${HOME}/vendor/ruby
-COPY --from=builder --chown=1001:0 ${HOME}/public ${HOME}/public
+COPY --from=builder --chown=1001:1001 ${HOME}/.bundle/config ${HOME}/.bundle/config
+COPY --from=builder --chown=1001:1001 ${HOME}/Gemfile.lock ${HOME}/Gemfile.lock
+COPY --from=builder --chown=1001:1001 ${HOME}/vendor/ruby ${HOME}/vendor/ruby
+COPY --from=builder --chown=1001:1001 ${HOME}/public ${HOME}/public
 RUN rm -rf bundler.d/nulldb.rb bin/spring
 
-RUN date -u > BUILD_TIME
+#RUN date -u > BUILD_TIME
 
 # Start the main process.
 CMD bundle exec bin/rails server
